@@ -1,0 +1,86 @@
+name: Build Android APK
+
+# Runs automatically on every push to "main", and can also be triggered
+# manually from the "Actions" tab ("Run workflow" button).
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Unpack project.zip (if the project was uploaded as a single zip)
+        run: |
+          if [ -f project.zip ]; then
+            echo "Found project.zip - extracting project files into the workspace..."
+            unzip -o project.zip -d .
+          else
+            echo "No project.zip found at the repo root - assuming www/, resources/, package.json etc. were already committed directly."
+          fi
+
+      - name: Verify required project files are present
+        run: |
+          missing=0
+          for f in www/index.html package.json capacitor.config.json; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing required file: $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "::error::One or more required files are missing. Make sure project.zip (or the individual files) were uploaded to the repository root."
+            exit 1
+          fi
+          echo "All required files found."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Java (required by Gradle/Android)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install project dependencies
+        run: npm install
+
+      - name: Add the Android platform (generates the android/ folder)
+        run: npx cap add android
+
+      - name: Generate the app icon and splash screen
+        run: npx @capacitor/assets generate --android
+
+      - name: Copy the web app into the Android project
+        run: npx cap sync android
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build the debug APK
+        # Debug builds are automatically signed by Gradle's own auto-generated
+        # debug keystore, so this needs no secrets or manual signing - the
+        # output APK is already installable on a real device.
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: royal-stores-growth-tracker-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
